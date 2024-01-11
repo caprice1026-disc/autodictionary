@@ -2,26 +2,20 @@ from openai import OpenAI
 import os
 import csv
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
+
 # OpenAI APIのキーを環境変数から取得
 OPENAI_API_KEY = os.environ['OPENAI_API_KEY']
 
-
-def read_and_split_file(file_path, chunk_size=6000):
-    """
-    指定されたファイルを読み込み、指定されたサイズで分割する関数。
-    :param file_path: 読み込むファイルのパス。
-    :param chunk_size: 分割する文字数。
-    :return: 分割されたテキストのリスト。
-    """
+def read_and_split_file(file_path, chunk_size=10000):
     with open(file_path, 'r', encoding='utf-8') as file:
         text = file.read()
-    
-    # テキストを指定されたサイズで分割
     chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
     return chunks
 
 system_prompt = """
-あなたは最先端技術の用語集を作成するアシスタントです。与えられた文章の内容から、3Dプリンター、AI（人工知能）、IoT、VR/AR、エッジコンピューティング、エネルギー技術、サイバーセキュリティ、スペーステクノロジー、ドローン、ニューロテクノロジー、バイオテクノロジー、ビッグデータ、ブロックチェーン、ヘルスケアテクノロジー、メタバース、量子コンピューターに関する用語を出来る限り多く抜き出してJSON形式でパースしてください。
+あなたは最先端技術の用語集を作成するアシスタントです。与えられた文章の内容から、3Dプリンター、AI（人工知能）、エネルギー技術、サイバーセキュリティ、ニューロテクノロジー、バイオテクノロジー、ビッグデータ、ブロックチェーン、ヘルスケアテクノロジーに関する用語を出来る限り多く抜き出してJSON形式でパースしてください。
 用語に関しては、基礎的な用語から専門的な用語まで、幅広く抜き出してください。また、それらに関連しているであろう固有名詞もできる限り多く抜き出してください。関係ない用語が多少出てきても構いませんのでできる限り多くの用語を抜き出してください。
 JSONのキーはwordsとし、値は用語の配列としてください。用語は重複しないようにしてください。
 """
@@ -42,45 +36,40 @@ def call_openai_api(content):
     else:
         return json.loads(response.choices[0].message.content)
 
-# ファイルパスの指定（例: 'example.txt'）
-file_path = 'test.txt'
+# CSVファイルへの書き込み用ロック
+responses_lock = Lock()
+other_responses_lock = Lock()
 
-# ファイルを読み込み、5000文字ごとに分割
-chunks = read_and_split_file(file_path)
-
-# 応答を格納するリスト
-responses = []
-# 他の応答を格納するリスト
-other_responses = []
-
-# 各チャンクに対してAPIを呼び出し
-for chunk in chunks:
+def process_chunk(chunk, responses_writer, other_responses_writer):
     response = call_openai_api(chunk)
     if response != {}:
         # 'words' キーの内容を処理
         if 'words' in response:
-            responses.extend(response['words'])
+            with responses_lock:
+                for word in set(response['words']):  # 重複除去
+                    responses_writer.writerow([word])
 
         # 'words' 以外のキーの内容を処理
-        for key, value in response.items():
-            if key != 'words':
-                other_responses.append({key: value})
+        with other_responses_lock:
+            for key, value in response.items():
+                if key != 'words':
+                    other_responses_writer.writerow([key, value])
 
+# メイン処理
+file_path = 'ブロックチェーン.txt'
+chunks = read_and_split_file(file_path)
 
-# 重複を除去（順序を保持しない）
-unique_responses = list(set(responses))
+with open('responses.csv', 'w', newline='', encoding='utf-8') as responses_file, \
+     open('other_responses.csv', 'w', newline='', encoding='utf-8') as other_responses_file:
+    
+    responses_writer = csv.writer(responses_file)
+    other_responses_writer = csv.writer(other_responses_file)
 
-# CSVファイルにユニークな応答を保存
-with open('responses.csv', 'w', newline='', encoding='utf-8') as file:
-    writer = csv.writer(file)
-    writer.writerow(['Response'])
-    for response in unique_responses:
-        writer.writerow([response])
+    responses_writer.writerow(['Response'])
+    other_responses_writer.writerow(['Key', 'Value'])
 
-# 別のCSVファイルに他の応答を保存
-with open('other_responses.csv', 'w', newline='', encoding='utf-8') as file:
-    writer = csv.writer(file)
-    writer.writerow(['Key', 'Value'])
-    for response in other_responses:
-        for key, value in response.items():
-            writer.writerow([key, value])
+    # ThreadPoolExecutorを使用してチャンクを並列処理
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = [executor.submit(process_chunk, chunk, responses_writer, other_responses_writer) for chunk in chunks]
+        for future in as_completed(futures):
+            future.result()  # 例外が発生した場合にキャッチするためにresultを呼び出す
