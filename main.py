@@ -6,7 +6,7 @@ import json
 OPENAI_API_KEY = os.environ['OPENAI_API_KEY']
 
 
-def read_and_split_file(file_path, chunk_size=5000):
+def read_and_split_file(file_path, chunk_size=6000):
     """
     指定されたファイルを読み込み、指定されたサイズで分割する関数。
     :param file_path: 読み込むファイルのパス。
@@ -27,7 +27,7 @@ JSONのキーはwordsとし、値は用語の配列としてください。用�
 """
 
 def call_openai_api(content):
-    client = OpenAI(OPENAI_API_KEY)
+    client = OpenAI()
     response = client.chat.completions.create(
         model="gpt-4-1106-preview",
         temperature=0,
@@ -43,7 +43,7 @@ def call_openai_api(content):
         return json.loads(response.choices[0].message.content)
 
 # ファイルパスの指定（例: 'example.txt'）
-file_path = 'example.txt'
+file_path = 'test.txt'
 
 # ファイルを読み込み、5000文字ごとに分割
 chunks = read_and_split_file(file_path)
@@ -66,11 +66,15 @@ for chunk in chunks:
             if key != 'words':
                 other_responses.append({key: value})
 
-# CSVファイルに応答を保存
+
+# 重複を除去（順序を保持しない）
+unique_responses = list(set(responses))
+
+# CSVファイルにユニークな応答を保存
 with open('responses.csv', 'w', newline='', encoding='utf-8') as file:
     writer = csv.writer(file)
     writer.writerow(['Response'])
-    for response in responses:
+    for response in unique_responses:
         writer.writerow([response])
 
 # 別のCSVファイルに他の応答を保存
